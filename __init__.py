@@ -1,6 +1,6 @@
 import io
 import multiprocessing
-import operator
+import dill
 import pickle
 import platform
 import subprocess
@@ -8,8 +8,7 @@ import sys
 import tempfile
 from collections import defaultdict
 from email.parser import BytesParser
-from functools import cache, partial
-import numpy as np
+from functools import partial
 import re as regex
 import requests
 from lxml import etree
@@ -18,9 +17,8 @@ from fake_headers import Headers
 from a_pandas_ex_apply_ignore_exceptions import pd_add_apply_ignore_exceptions
 import pandas as pd
 import os
-
+from functools import reduce
 pd_add_apply_ignore_exceptions()
-
 
 iswindows = "win" in platform.platform().lower()
 if iswindows:
@@ -35,6 +33,7 @@ if iswindows:
     }
 else:
     invisibledict = {}
+
 
 def get_fake_header():
     header = Headers(headers=False).generate()
@@ -63,9 +62,14 @@ def get_html_src(htmlcode, fake_header=True):
     return htmlcode
 
 
-def multidata(htmls):
-    childexplode = False
-    parentexplode = False
+def multidata(
+    htmls,
+    childexplode=False,
+    parentexplode=False,
+    children_and_parents=False,
+    allowed_tags=(),
+    filter_function=None,
+):
     allco = []
     hierachcounter1 = 1
     hierachcounter2 = 2
@@ -93,6 +97,9 @@ def multidata(htmls):
                             hierachcounter3,
                             childexplode,
                             parentexplode,
+                            children_and_parents,
+                            allowed_tags,
+                            filter_function,
                         ]
                     )
                     con = con + 1
@@ -104,57 +111,18 @@ def multidata(htmls):
     return allco
 
 
-def nested_dict():
-    return defaultdict(nested_dict)
-
-
-def parsehtml2df(multiparseddata, shar_list):
-    try:
-        _parsehtml2df(multiparseddata, shar_list)
-    except Exception as fe:
-        sys.stderr.write(f"{fe}\n")
-        sys.stderr.flush()
-
-
-def _parsehtml2df(multiparseddata, shar_list):
+def _parsehtmldf(file):
     parser = etree.HTMLParser()
-    file = multiparseddata[1]
     tree = etree.parse(io.BytesIO(file), parser)
     ellis = {}
+    ellis_children = defaultdict(set)
+    ellis_parents = defaultdict(set)
+
+    ellis_children_hierachy = defaultdict(set)
+
     hierachyset = set()
-    uniquecounter = -2
+    uniquecounter = 0
     hashcodesonly = {}
-    d = nested_dict()
-    alldo = []
-    childexplode = multiparseddata[7]
-    parentexplode = multiparseddata[8]
-
-    @cache
-    def len_min_check(u):
-        return len(u), min(u)
-
-    @cache
-    def sortedfaster(x):
-        return tuple(
-            sorted(
-                set(
-                    (tuple(b) for b in ([z for z in y if z in uniqhag] for y in x) if b)
-                ),
-                key=len_min_check,
-            )
-        )
-
-    def convert_to_normal_dict_simple(di, keyx):
-        if isinstance(di, defaultdict):
-            di = {
-                k: convert_to_normal_dict_simple(v, (keyx + (k,)))
-                for k, v in di.items()
-                if not paresedelements[k]["aa_parents"].add(
-                    tuple((hashcodesonly.get(x, x) for x in keyx))
-                )
-            }
-        alldo.append(keyx)
-        return di
 
     def rec2(t, number):
         nonlocal uniquecounter
@@ -168,14 +136,20 @@ def _parsehtml2df(multiparseddata, shar_list):
             uniquecounter += 1
             ellis[hashcode2] = {"element": t, "uniquehash": uniquecounter}
             hashcodesonly[hashcode2] = uniquecounter
+
         for x in method():
             hashcode = hash(x)
+            ellis_children[hashcode2].add(hashcode)
+            ellis_parents[hashcode].add(hashcode2)
+            ellis_children_hierachy[hashcode2].add(tuple([hashcode]))
+
             if hashcode not in ellis:
                 uniquecounter += 1
                 ellis[hashcode] = {"element": x, "uniquehash": uniquecounter}
                 hashcodesonly[hashcode] = uniquecounter
             if hashcode not in number:
                 rec2(x, number + [hashcode])
+
             else:
                 rec2(x, number)
 
@@ -183,7 +157,48 @@ def _parsehtml2df(multiparseddata, shar_list):
     hashcodesonly[hashroot] = uniquecounter
     ellis[hashroot] = {"element": tree, "uniquehash": uniquecounter}
     rec2(tree, [hashroot])
-    paresedelements = {}
+    return (
+        ellis_children_hierachy,
+        hashroot,
+        hashcodesonly,
+        ellis,
+        ellis_parents,
+        ellis_children,
+    )
+
+
+def parsehtml2df(multiparseddata, shared_list):
+    try:
+        multiparseddataparsing(multiparseddata, shared_list)
+    except Exception as fe:
+        sys.stderr.write(f"{fe}")
+        return
+
+
+def multiparseddataparsing(multiparseddata, shared_list):
+    file = get_html_src(multiparseddata[1])
+    (
+        ellis_children_hierachy,
+        hashroot,
+        hashcodesonly,
+        ellis,
+        ellis_parents,
+        ellis_children,
+    ) = _parsehtmldf(file)
+
+    forbidden_tags = multiparseddata[7]
+    print_function_exceptions = multiparseddata[8]
+    children_and_parents = multiparseddata[9]
+    allowed_tags = multiparseddata[10]
+
+    filter_function = dill.loads(multiparseddata[11])
+
+    tagdict = {}
+    commentdict = {}
+    taildict = {}
+    textdict = {}
+    itemsdict = {}
+    htmlcodedict = {}
     for key, item1 in ellis.items():
         item = item1["element"]
         try:
@@ -218,121 +233,128 @@ def _parsehtml2df(multiparseddata, shar_list):
         except Exception:
             allitems = ((pd.NA, pd.NA),)
         try:
-            htmlcode = etree.tostring(item, method="text", encoding="unicode")
+            htmlcode = etree.tostring(item, method="text", encoding="unicode").strip()
         except Exception:
             htmlcode = pd.NA
-        paresedelements[key] = {
-            "aa_tag": tag,
-            "aa_tail": tail,
-            "aa_text": text,
-            "aa_parents": set(),
-            "aa_children": set(),
-            "aa_uniquehash": item1["uniquehash"],
-            "aa_allitems": allitems,
-            "aa_html": htmlcode,
-            "aa_comment": str(comment),
-        }
-    hierachy = list(hierachyset)
-    hierachy.sort(key=len, reverse=True)
+        tagdict[key] = tag
+        commentdict[key] = str(comment)
+        taildict[key] = tail
+        textdict[key] = text
+        itemsdict[key] = allitems
+        htmlcodedict[key] = htmlcode
 
-    for i in hierachy:
-        try:
-            it = iter(i)
-            firstkey = next(it)
-            value = d[firstkey]
-            iti = tuple(it)
-            for x in iti:
-                try:
-                    paresedelements[firstkey]["aa_children"].add(
-                        (hashcodesonly.get(x, x))
-                    )
-                except Exception:
-                    pass
-
-            for ini, element in enumerate(iti):
-                for x in iti[ini + 1 :]:
-                    try:
-                        paresedelements[element]["aa_children"].add(
-                            (hashcodesonly.get(x, x))
-                        )
-                    except Exception:
-                        pass
-
-                value = operator.itemgetter(element)(value)
-        except Exception:
-            continue
-    _ = convert_to_normal_dict_simple(d, ())
-    for key in paresedelements:
-        paresedelements[key]["aa_parents"] = tuple(
-            sorted(paresedelements[key]["aa_parents"], key=len)[-1]
-        )
-        paresedelements[key]["aa_children"] = tuple(
-            (paresedelements[key]["aa_children"])
-        )
-    df = pd.DataFrame.from_dict(paresedelements, orient="index").assign(
-        aa_alldata=multiparseddata[3],
-        aa_p0=multiparseddata[4],
-        aa_p1=multiparseddata[5],
-        aa_p2=multiparseddata[6],
-        aa_p3=multiparseddata[0],
-        aa_p4=multiparseddata[2],
+    dfchildrenhierachy = (
+        pd.DataFrame(ellis_children_hierachy.items())
+        .set_index(0)
+        .rename(columns={1: "aa_children_hierachy"})
     )
-    df.dropna(subset="aa_tag", inplace=True)
-    df = df.loc[(df.aa_tag != "body") & (df.aa_tag != "html")]
-    uniqhag = df.aa_uniquehash.to_list()
-    df["aa_index_part"] = np.arange(len(df))
+    dfhashcodesonly = (
+        pd.DataFrame(hashcodesonly.items())
+        .set_index(0)
+        .rename(columns={1: "aa_hashcodes_only"})
+    )
+    dfellis_parents = (
+        pd.DataFrame(ellis_parents.items())
+        .set_index(0)
+        .rename(columns={1: "aa_all_parents"})
+    )
 
-    df.loc[:, "aa_parents"] = df.aa_parents.ds_apply_ignore(
-        (), lambda x: sortedfaster((x,))[0]
+    dfellis_children = (
+        pd.DataFrame(ellis_children.items())
+        .set_index(0)
+        .rename(columns={1: "aa_all_children"})
     )
-    df.loc[:, "aa_children"] = df.aa_children.ds_apply_ignore(
-        (), lambda x: sortedfaster((x,))[0]
+    dftagdict = pd.DataFrame(tagdict.items()).set_index(0).rename(columns={1: "aa_tag"})
+
+    dfcommentdict = (
+        pd.DataFrame(commentdict.items()).set_index(0).rename(columns={1: "aa_comment"})
     )
-    df = (
-        df.explode("aa_allitems", ignore_index=True)
-        .assign(
-            aa_attr_keys=lambda j: j.aa_allitems.str[0],
-            aa_attr_values=lambda j: j.aa_allitems.str[1],
-        )
-        .drop(columns="aa_allitems", inplace=False)
-        .astype(
-            {
-                "aa_uniquehash": pd.Int32Dtype(),
-                "aa_index_part": pd.Int32Dtype(),
-                "aa_p0": pd.Int32Dtype(),
-                "aa_p1": pd.Int32Dtype(),
-                "aa_p2": pd.Int32Dtype(),
-                "aa_p3": pd.Int32Dtype(),
-                "aa_p4": pd.Int32Dtype(),
-            }
-        )
-        .fillna(pd.NA, inplace=False)[
-            [
-                "aa_tag",
-                "aa_attr_keys",
-                "aa_attr_values",
-                "aa_parents",
-                "aa_children",
-                "aa_text",
-                "aa_html",
-                "aa_comment",
-                "aa_tail",
-                "aa_uniquehash",
-                "aa_index_part",
-                "aa_p0",
-                "aa_p1",
-                "aa_p2",
-                "aa_p3",
-                "aa_p4",
-                "aa_alldata",
-            ]
+    dftaildict = (
+        pd.DataFrame(taildict.items()).set_index(0).rename(columns={1: "aa_tail"})
+    )
+    dftextdict = (
+        pd.DataFrame(textdict.items()).set_index(0).rename(columns={1: "aa_text"})
+    )
+    dfitemsdict = (
+        pd.DataFrame(itemsdict.items())
+        .set_index(0)
+        .rename(columns={1: "aa_allitems"})
+        .explode("aa_allitems")
+    )  #
+    dfitemsdict["aa_attr_keys"] = dfitemsdict["aa_allitems"].ds_apply_ignore(
+        pd.NA, lambda j: j[0]
+    )
+    dfitemsdict["aa_attr_values"] = dfitemsdict["aa_allitems"].ds_apply_ignore(
+        pd.NA, lambda j: j[1]
+    )
+    dfitemsdict.drop(columns=["aa_allitems"], inplace=True)
+    dfhtmlcodedict = (
+        pd.DataFrame(htmlcodedict.items()).set_index(0).rename(columns={1: "aa_html"})
+    )
+
+    dfellis_children["aa_all_children"] = dfellis_children[
+        "aa_all_children"
+    ].ds_apply_ignore((), tuple)
+    dfellis_parents["aa_all_parents"] = dfellis_parents[
+        "aa_all_parents"
+    ].ds_apply_ignore((), tuple)
+    dfchildrenhierachy["aa_children_hierachy"] = dfchildrenhierachy[
+        "aa_children_hierachy"
+    ].ds_apply_ignore((), tuple)
+    if children_and_parents:
+        dfs = [
+            dftagdict,
+            dfitemsdict,
+            dftextdict,
+            dfellis_parents,
+            dfellis_children,
+            dfcommentdict,
+            dftaildict,
+            dfhashcodesonly,
+            dfhtmlcodedict,
+            dfchildrenhierachy,
         ]
+    else:
+        dfs = [
+            dftagdict,
+            dfitemsdict,
+            dftextdict,
+            # dfellis_parents,
+            # dfellis_children,
+            dfcommentdict,
+            dftaildict,
+            dfhashcodesonly,
+            dfhtmlcodedict,
+            # dfchildrenhierachy,
+        ]
+    df = reduce(
+        lambda a, b: a.merge(b, right_index=True, left_index=True, how="outer"), dfs
     )
-    if parentexplode:
-        df = df.explode("aa_parents", ignore_index=True)
-    if childexplode:
-        df = df.explode("aa_children", ignore_index=True)
-    shar_list.append(df)
+    if allowed_tags:
+        df = df.loc[(df.aa_tag.isin(allowed_tags))].reset_index(drop=True)
+    if forbidden_tags:
+        df = df.loc[~(df.aa_tag.isin(forbidden_tags))].reset_index(drop=True)
+
+    if filter_function:
+        df = df.loc[
+            df.apply(
+                lambda x: apply_pandas_function(
+                    filter_function, x, printexception=print_function_exceptions
+                ),
+                axis=1,
+            )
+        ]
+
+    shared_list.append(
+        df.assign(
+            aa_alldata=multiparseddata[3],
+            aa_p0=multiparseddata[4],
+            aa_p1=multiparseddata[5],
+            aa_p2=multiparseddata[6],
+            aa_p3=multiparseddata[0],
+            aa_p4=multiparseddata[2],
+        )
+    )
 
 
 def get_procs(processes):
@@ -350,42 +372,115 @@ def get_tmpfile(suffix=".txt"):
 
 
 def subprocess_parsing(
-    htmldata, chunks=2, processes=5, print_stdout=True, print_stderr=True
+    htmldata,
+    chunks=2,
+    processes=5,
+    print_function_exceptions=True,
+    print_stdout=True,
+    print_stderr=True,
+    children_and_parents=True,
+    allowed_tags=(),
+    filter_function=None,
+    forbidden_tags=("html", "body"),
 ):
+    if not isinstance(htmldata, (list, tuple)):
+        htmldata = [htmldata]
+    htmldatafiles = []
+    deletefilefunctions = []
+    for da in htmldata:
+        if isinstance(da, bytes):
+            _fi, _remove = get_tmpfile(suffix=".mhtml")
+            with open(_fi, mode="wb") as f:
+                f.write(da)
+                htmldatafiles.append(_fi)
+                deletefilefunctions.append(_remove)
+        elif isinstance(da, str):
+            if ">" in da or "<" in da:
+                _fi, _remove = get_tmpfile(suffix=".mhtml")
+                with open(_fi, mode="w", encoding="utf-8") as f:
+                    f.write(da)
+                htmldatafiles.append(_fi)
+                deletefilefunctions.append(_remove)
+        else:
+            htmldatafiles.append(da)
+    htmldata = htmldatafiles
     fi0, remo0 = get_tmpfile(suffix=".xxtmpxx")
-
+    deletefilefunctions.append(remo0)
     dic = {}
+    filterfunctionpickled = dill.dumps(
+        filter_function, protocol=pickle.HIGHEST_PROTOCOL
+    )
     procx = get_procs(processes)
     dic["htmls"] = [
-        q for q in multidata(htmldata) if q and isinstance(q, list) and len(q) == 9
+        q
+        for q in multidata(
+            htmldata,
+            childexplode=forbidden_tags,
+            parentexplode=print_function_exceptions,
+            children_and_parents=children_and_parents,
+            allowed_tags=allowed_tags,
+            filter_function=filterfunctionpickled,
+        )
+        if q and isinstance(q, list) and len(q) == 12
     ]
     dic["chunks"] = chunks
     dic["procs"] = procx if procx else os.cpu_count()
     dic["save_path"] = fi0
     v = pickle.dumps(dic, protocol=pickle.HIGHEST_PROTOCOL)
     fi, remo = get_tmpfile(suffix=".xxtmpxx")
+    deletefilefunctions.append(remo)
     with open(fi, mode="wb") as f:
         f.write(v)
     p = subprocess.run(
-        [sys.executable, __file__, fi],
-        capture_output=True,
-        **invisibledict
+        [sys.executable, __file__, fi], capture_output=True, **invisibledict
     )
     if print_stdout:
         print(p.stdout.decode("utf-8", "backslashreplace"))
     if print_stderr:
-        sys.stderr.write(f"{p.stderr.decode('utf-8','backslashreplace')}\n\n")
+        sys.stderr.write(f"{p.stderr.decode('utf-8', 'backslashreplace')}\n\n")
     df = pd.read_pickle(fi0)
-    #
-    try:
-        os.remove(fi0)
-    except Exception:
-        pass
-    try:
-        os.remove(fi)
-    except Exception:
-        pass
+    for fun in deletefilefunctions:
+        try:
+            fun()
+        except Exception:
+            pass
     return df
+
+
+def get_fake_header():
+    header = Headers(headers=False).generate()
+    agent = header["User-Agent"]
+
+    headers = {
+        "User-Agent": f"{agent}",
+    }
+
+    return headers
+
+
+def apply_pandas_function(fu, x, printexception=True):
+    try:
+        return fu(x)
+    except Exception as fe:
+        if printexception:
+            sys.stderr.write(f"{fe}\n")
+        return False
+
+
+def get_html_src(htmlcode, fake_header=True):
+    if isinstance(htmlcode, str):
+        if os.path.exists(htmlcode):
+            if os.path.isfile(htmlcode):
+                with open(htmlcode, mode="rb") as f:
+                    htmlcode = f.read()
+        elif regex.search(r"^.{1,10}://", str(htmlcode)) is not None:
+            if not fake_header:
+                htmlcode = requests.get(htmlcode).content
+            else:
+                htmlcode = requests.get(htmlcode, headers=get_fake_header()).content
+        else:
+            htmlcode = htmlcode.encode("utf-8", "backslashreplace")
+    return htmlcode
 
 
 if __name__ == "__main__":
@@ -408,6 +503,6 @@ if __name__ == "__main__":
                             ((value, shared_list) for value in htmls),
                             chunksize=chunks,
                         )
-                    _=pd.concat(
-                        iter(shared_list), ignore_index=True, copy=False
-                    ).to_pickle(save_path)
+                        _ = pd.concat(
+                            iter(shared_list), ignore_index=True, copy=False
+                        ).to_pickle(save_path)

@@ -1,6 +1,6 @@
 a_pandas_ex_apply_ignore_exceptions
+dill
 fake_headers
 lxml
-numpy
 pandas
 requests
