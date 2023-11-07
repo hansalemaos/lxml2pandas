@@ -6,66 +6,65 @@
 
 ```python
 from lxml2pandas import subprocess_parsing
+from PrettyColorPrinter import add_printer
 
+add_printer(1)
+htmldata = [
+    ("bet365", r"C:\Users\hansc\Downloads\bet365 - Apostas Desportivas Online.mhtml"),
+    (
+        "betano",
+        r"C:\Users\hansc\Downloads\Brasil Brasileirão - Série A Apostas - Futebol Odds _ Betano.mhtml",
+    ),
+    ("sportingbet", r"C:\Users\hansc\Downloads\Apostas Futebol _ Sportingbet.mhtml"),
+]
 df = subprocess_parsing(
-    tmpfiles,
+    htmldata,
     chunks=1,
-    processes=4,
+    processes=5,
+    fake_header=True,
     print_stdout=True,
     print_stderr=True,
-    print_function_exceptions=True,
-    children_and_parents=True,
-    allowed_tags=('span',),
-    filter_function=lambda x: 'odd' in (gh:=str(x.aa_attr_values).lower()) or 'team' in gh,
 )
+#
+firstlist = df.loc[
+    df.aa_attr_values.str.contains("ovm-FixtureList ovm-Competition_Fixtures", na=False)
+]
+for k, i in firstlist.iterrows():
+    df2 = df.loc[df.aa_element_id.isin(i.aa_all_children)]
+    df3 = df2.loc[
+        df2.aa_attr_values.isin(
+            ["ovm-FixtureDetailsTwoWay_TeamName", "ovm-ParticipantOddsOnly_Odds"]
+        )
+    ]
+    df4 = [df3.iloc[x : x + 5] for x in range(0, len(df3), 5)]
+    for dframe in df4:
+        if len(dframe) == 5:
+            dfc = dframe["aa_attr_values"].value_counts()
+            try:
+                if (
+                    dfc.loc["ovm-FixtureDetailsTwoWay_TeamName"] == 2
+                    and dfc.loc["ovm-ParticipantOddsOnly_Odds"] == 3
+                ):
+                    print(dframe)
+            except Exception:
+                pass
+chi = df.loc[df.aa_attr_values == "events-list__grid__event"].aa_all_children
+for c in chi:
+    (
+        df.loc[
+            (df.aa_element_id.isin(c))
+            & (df.aa_doc_id == "betano")
+            & (
+                (
+                    (df.aa_tag == "span")
+                    & (df.aa_attr_values == "selections__selection__odd")
+                )
+                | (
+                    (df.aa_tag == "span")
+                    & (df.aa_attr_values.str.contains("participant-name", na=False))
+                )
+            )
+        ]
+    ).ds_color_print_all()
 
-df = subprocess_parsing(
-    tmpfiles,
-    chunks=1,
-    processes=4,
-    print_stdout=True,
-    print_stderr=True,
-    print_function_exceptions=True,
-    children_and_parents=False,
-    allowed_tags=('span',),
-    filter_function=lambda x: 'odd' in (gh := str(x.aa_attr_values).lower()) or 'team' in gh,
-    # lambda x:'yt' in str(x.aa_attr_values).lower()  
-)
-
-df = subprocess_parsing(
-    tmpfiles,
-    chunks=1,
-    processes=4,
-    print_stdout=True,
-    print_stderr=True,
-    children_and_parents=True,
-    allowed_tags=(),
-    forbidden_tags=['div','body','html'],
-    filter_function=lambda x:'Odd' in str(x.aa_html),
-
-)
-df = subprocess_parsing(
-    tmpfiles,
-    chunks=1,
-    processes=4,
-    print_stdout=True,
-    print_stderr=True,
-    print_function_exceptions=True,
-    children_and_parents=False,
-    allowed_tags=('div',),
-    filter_function= lambda x:'team' in str(x.aa_attr_values).lower()
-    # lambda x:'yt' in str(x.aa_attr_values).lower()   #  lambda x:x.aa_tag=='div' or str(x.aa_attr_keys) in ['class','href'] or 'mais' in str(x.aa_text)
-)
-df = subprocess_parsing(
-    parsedata,
-    chunks=1,
-    processes=4,
-    print_stdout=True,
-    print_stderr=True,
-    print_function_exceptions=True,
-    children_and_parents=True,
-    allowed_tags=(),
-    forbidden_tags=('html','body'),
-    filter_function= lambda x:'t' in str(x.aa_attr_values).lower()
-)
 ```
