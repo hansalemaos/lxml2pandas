@@ -18,6 +18,7 @@ from a_pandas_ex_apply_ignore_exceptions import pd_add_apply_ignore_exceptions
 import pandas as pd
 import numpy as np
 from lxml import html
+
 pd_add_apply_ignore_exceptions()
 
 iswindows = "win" in platform.platform().lower()
@@ -34,6 +35,10 @@ if iswindows:
 else:
     invisibledict = {}
 idcounter = 0
+allowedtags = ()
+allowedattr = ()
+forbiddentags = ()
+allowedattrkeys = ()
 
 
 def multidata(multipart_messages):
@@ -60,17 +65,19 @@ def multidata(multipart_messages):
     return allco
 
 
-def init_worker(shared_int):
+def init_worker(
+    shared_int, allowed_tags, allowed_attr, forbidden_tags, allowed_attr_keys
+):
     global idcounter
+    global allowedtags
+    global allowedattr
+    global forbiddentags
+    global allowedattrkeys
     idcounter = shared_int
-
-
-def parse_html(data, shared_list):
-    try:
-        _parse_html(data, shared_list)
-    except Exception as e:
-        sys.stderr.write(f"{e}\n")
-        sys.stderr.flush()
+    allowedtags = allowed_tags
+    allowedattr = allowed_attr
+    forbiddentags = forbidden_tags
+    allowedattrkeys = allowed_attr_keys
 
 
 def _parse_html(data, shared_list):
@@ -231,7 +238,211 @@ def _parse_html(data, shared_list):
     )
 
 
-# alldfs = []
+def parse_html(data, shared_list):
+    try:
+        if any(
+            [
+                allowedtags,
+                allowedattr,
+                forbiddentags,
+                allowedattrkeys,
+            ]
+        ):
+            _parse_html_filter(data, shared_list)
+        else:
+            _parse_html(data, shared_list)
+    except Exception as e:
+        sys.stderr.write(f"{e}\n")
+        sys.stderr.flush()
+
+
+def _parse_html_filter(data, shared_list):
+    def fia(el, h):
+        global idcounter
+        elhash = hash(el)
+        if elhash not in newids:
+            newids[elhash] = int(idcounter.value)
+            idcounter.value += 1
+        if elhash not in allitems:
+            allitems[elhash] = el
+        if not hasattr(el, "getchildren"):
+            method = el.iter
+        else:
+            method = el.getchildren
+        for j in method():
+            fia(j, h + (elhash,))
+            allparents[hash(j)].update(h)
+            allparentschildren[elhash].add(hash(j))
+
+    allitems = {}
+    allparents = defaultdict(set)
+    allparentschildren = defaultdict(set)
+
+    newids = {}
+    tree = html.fromstring(data[1])
+    fia(tree, ())
+    allparents = {k: frozenset(v) for k, v in allparents.items()}
+    allparentschildren = {k: frozenset(v) for k, v in allparentschildren.items()}
+    df = pd.DataFrame(pd.Series(allitems))
+    df["aa_tag"] = df[0].ds_apply_ignore(pd.NA, lambda q: q.tag)
+    if allowedtags:
+        df = df.loc[(df.aa_tag.isin(allowedtags)) | df.aa_tag.isna()]
+    if forbiddentags:
+        df = df.loc[(~df.aa_tag.isin(forbiddentags)) | df.aa_tag.isna()]
+    df["aa_items"] = df[0].ds_apply_ignore(((None, None),), lambda q: tuple(q.items()))
+
+    def get_str_v(x):
+        try:
+            for xx in x:
+                if xx[1] in allowedattr:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def get_str_k(x):
+        try:
+            for xx in x:
+                if xx[0] in allowedattrkeys:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    if allowedattr:
+        df = df.loc[df["aa_items"].apply(get_str_v) | df.aa_tag.isna()]
+
+    if allowedattrkeys:
+        if allowedattr:
+            df = df.loc[df["aa_items"].apply(get_str_k) | df.aa_tag.isna()]
+    df = df.explode("aa_items")  # .reset_index(drop=True)
+    df["aa_attr_keys"] = df["aa_items"].ds_apply_ignore(
+        pd.NA, lambda j: j[0] if not isinstance(j[0], str) else j[0].strip()
+    )
+    df["aa_attr_values"] = df["aa_items"].ds_apply_ignore(
+        pd.NA, lambda j: j[1] if not isinstance(j[1], str) else j[1].strip()
+    )
+    df["aa_element_id"] = df.index.__array__().copy()
+    df["aa_parents"] = df.index.map(allparents)
+    allchildren = defaultdict(set)
+    for k, v in allparents.items():
+        for vv in v:
+            allchildren[vv].add(k)
+    allchildren2 = {}
+    for k in allchildren:
+        allchildren2[k] = frozenset(allchildren[k])
+    df["aa_all_children"] = df.index.map(allchildren2)
+    df["aa_direct_children"] = df.index.map(allparentschildren)
+
+    def parse_text(h):
+        try:
+            tco = "\n".join(([str(x.text_content()) for x in h])).strip()
+            if not tco:
+                return etree.tostring(
+                    h, method="text", encoding="unicode", with_tail=True
+                ).strip()
+            return tco
+        except Exception:
+            try:
+                return etree.tostring(
+                    h, method="text", encoding="unicode", with_tail=True
+                ).strip()
+            except Exception:
+                return ""
+
+    df["aa_text"] = df[0].ds_apply_ignore(pd.NA, lambda q: parse_text(q))
+    df["aa_tail"] = df[0].ds_apply_ignore(pd.NA, lambda q: q.tail.strip())
+    df["aa_html"] = df[0].ds_apply_ignore(
+        pd.NA,
+        lambda q: etree.tostring(
+            q, method="html", encoding="unicode", pretty_print=False
+        ).strip(),
+    )
+    df["aa_doc_id"] = data[2]
+    df["aa_multipart_id"] = data[0]
+    df["aa_multipart_counter"] = data[3]
+
+    df = df.loc[
+        ~(
+            df[0].apply(lambda q: "_ElementTree" in str(type(q)))
+            | (df.aa_tag == "html")
+            | (df.aa_tag == "body")
+        )
+    ].reset_index(drop=True)
+
+    lookupdict = {v: k for k, v in df.aa_element_id.to_dict().items()}
+    df.aa_element_id = df.index.__array__().copy()
+
+    @cache
+    def get_vals(x):
+        alli = []
+        try:
+            for y in x:
+                try:
+                    alli.append(lookupdict.get(y, None))
+                except Exception:
+                    continue
+            return tuple(sorted([j for j in alli if j is not None]))
+        except Exception:
+            return ()
+
+    df.aa_parents = df.aa_parents.apply(get_vals)
+    df.aa_direct_children = df.aa_direct_children.apply(get_vals)
+    df.aa_all_children = df.aa_all_children.apply(get_vals)
+    df.loc[df.aa_tag.apply(callable), "aa_tag"] = "HTML_COMMENT"
+    df = df[
+        [
+            "aa_multipart_id",
+            "aa_element_id",
+            "aa_tag",
+            "aa_text",
+            "aa_attr_keys",
+            "aa_attr_values",
+            "aa_parents",
+            "aa_direct_children",
+            "aa_all_children",
+            "aa_html",
+            "aa_tail",
+            "aa_doc_id",
+            "aa_multipart_counter",
+        ]
+    ].fillna("")
+    unique_aa_tag = np.unique(df["aa_tag"].__array__())
+    unique_aa_text = np.unique(df["aa_text"].__array__())
+    unique_aa_attr_keys = np.unique(df["aa_attr_keys"].__array__())
+    unique_aa_attr_values = np.unique(df["aa_attr_values"].__array__())
+    unique_aa_html = np.unique(df["aa_html"].__array__())
+    unique_aa_tail = np.unique(df["aa_tail"].__array__())
+    unique_aa_doc_id = np.unique(df["aa_doc_id"].__array__())
+    unique_aa_parents = set(df["aa_parents"])
+    unique_aa_all_children = set(df["aa_all_children"])
+    unique_aa_direct_children = set(df["aa_direct_children"])
+
+    shared_list.append(
+        [
+            df.astype(
+                {
+                    "aa_multipart_id": np.uint32,
+                    "aa_element_id": np.uint32,
+                    "aa_multipart_counter": np.uint32,
+                }
+            ),
+            [
+                unique_aa_tag,
+                unique_aa_text,
+                unique_aa_attr_keys,
+                unique_aa_attr_values,
+                unique_aa_html,
+                unique_aa_tail,
+                unique_aa_doc_id,
+                unique_aa_parents,
+                unique_aa_all_children,
+                unique_aa_direct_children,
+            ],
+        ]
+    )
+
+
 
 
 def get_tmpfile(suffix=".txt"):
@@ -276,6 +487,10 @@ def subprocess_parsing(
     fake_header=True,
     print_stdout=True,
     print_stderr=True,
+    allowed_tags=(),
+    forbidden_tags=(),
+    allowed_attr=(),
+    allowed_attr_keys=(),
 ):
     newhtmldata = []
     deletefilefunctions = []
@@ -297,6 +512,10 @@ def subprocess_parsing(
         "processes": processes,
         "htmldata": newhtmldata,
         "outdata": fipkl,
+        "allowed_tags": allowed_tags,
+        "allowed_attr": allowed_attr,
+        "allowed_attr_keys": allowed_attr_keys,
+        "forbidden_tags": forbidden_tags,
     }
     v = pickle.dumps(datatosend, protocol=pickle.HIGHEST_PROTOCOL)
     basedata = base64.b64encode(v).decode()
@@ -311,7 +530,7 @@ def subprocess_parsing(
     if print_stdout:
         print(p.stdout.decode("utf-8", "backslashreplace"))
     if print_stderr:
-        sys.stderr.write(f"{p.stderr.decode('utf-8', 'backslashreplace')}\n\n")
+        sys.stderr.write(f"{p.stderr.decode('utf-8', 'backslashreplace')}\n")
         sys.stderr.flush()
     df = pd.read_pickle(fipkl)
     for fun in deletefilefunctions:
@@ -329,12 +548,24 @@ if __name__ == "__main__":
         outdata = parsedata["outdata"]
         chunks = parsedata["chunks"]
         processes = parsedata["processes"]
+        allowedtags = parsedata["allowed_tags"]
+        allowed_attr = parsedata["allowed_attr"]
+        forbidden_tags = parsedata["forbidden_tags"]
+        allowed_attr_keys = parsedata["allowed_attr_keys"]
         md = multidata(htmldata)
         with multiprocessing.Manager() as manager:
             shared_list = manager.list()
             counter = multiprocessing.Value("i", 0)
             with multiprocessing.Pool(
-                processes=processes, initializer=init_worker, initargs=(counter,)
+                processes=processes,
+                initializer=init_worker,
+                initargs=(
+                    counter,
+                    allowedtags,
+                    allowed_attr,
+                    forbidden_tags,
+                    allowed_attr_keys,
+                ),
             ) as pool:
                 pool.starmap(
                     parse_html,

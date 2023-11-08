@@ -9,6 +9,7 @@ from lxml2pandas import subprocess_parsing
 from PrettyColorPrinter import add_printer
 
 add_printer(1)
+
 htmldata = [
     ("bet365", r"C:\Users\hansc\Downloads\bet365 - Apostas Desportivas Online.mhtml"),
     (
@@ -17,6 +18,7 @@ htmldata = [
     ),
     ("sportingbet", r"C:\Users\hansc\Downloads\Apostas Futebol _ Sportingbet.mhtml"),
 ]
+allframes = []
 df = subprocess_parsing(
     htmldata,
     chunks=1,
@@ -25,32 +27,21 @@ df = subprocess_parsing(
     print_stdout=True,
     print_stderr=True,
 )
-#
-firstlist = df.loc[
-    df.aa_attr_values.str.contains("ovm-FixtureList ovm-Competition_Fixtures", na=False)
-]
-for k, i in firstlist.iterrows():
-    df2 = df.loc[df.aa_element_id.isin(i.aa_all_children)]
-    df3 = df2.loc[
-        df2.aa_attr_values.isin(
-            ["ovm-FixtureDetailsTwoWay_TeamName", "ovm-ParticipantOddsOnly_Odds"]
+
+for child in df.loc[df.aa_attr_values == "ovm-Fixture_Container"].aa_all_children:
+    dfr = df.loc[
+        df.aa_element_id.isin(child)
+        & (
+            (df.aa_attr_values == "ovm-FixtureDetailsTwoWay_TeamName")
+            | (df.aa_attr_values == "ovm-ParticipantOddsOnly_Odds")
         )
     ]
-    df4 = [df3.iloc[x : x + 5] for x in range(0, len(df3), 5)]
-    for dframe in df4:
-        if len(dframe) == 5:
-            dfc = dframe["aa_attr_values"].value_counts()
-            try:
-                if (
-                    dfc.loc["ovm-FixtureDetailsTwoWay_TeamName"] == 2
-                    and dfc.loc["ovm-ParticipantOddsOnly_Odds"] == 3
-                ):
-                    print(dframe)
-            except Exception:
-                pass
+    if len(dfr) == 5:
+        print(dfr)
+
 chi = df.loc[df.aa_attr_values == "events-list__grid__event"].aa_all_children
 for c in chi:
-    (
+    print(
         df.loc[
             (df.aa_element_id.isin(c))
             & (df.aa_doc_id == "betano")
@@ -65,6 +56,108 @@ for c in chi:
                 )
             )
         ]
-    ).ds_color_print_all()
+    )
+
+
+df = subprocess_parsing(
+    htmldata,
+    chunks=1,
+    processes=5,
+    fake_header=True,
+    print_stdout=True,
+    print_stderr=True,
+)
+
+# pre-filter
+df0 = subprocess_parsing(
+    htmldata,
+    chunks=1,
+    processes=5,
+    fake_header=True,
+    print_stdout=True,
+    print_stderr=True,
+    allowed_tags=("span", "div"),
+)
+df1 = subprocess_parsing(
+    htmldata,
+    chunks=1,
+    processes=5,
+    fake_header=True,
+    print_stdout=True,
+    print_stderr=True,
+    allowed_tags=("span",),
+)
+df2 = subprocess_parsing(
+    htmldata,
+    chunks=1,
+    processes=5,
+    fake_header=True,
+    print_stdout=True,
+    print_stderr=True,
+    allowed_tags=("span", "div"),
+    allowed_attr=(
+        "ovm-Fixture_Container",
+        "ovm-FixtureDetailsTwoWay_TeamName",
+        "ovm-ParticipantOddsOnly_Odds",
+    ),
+)
+
+df3 = subprocess_parsing(
+    htmldata,
+    chunks=1,
+    processes=5,
+    fake_header=True,
+    print_stdout=True,
+    print_stderr=True,
+    allowed_tags=(),
+    allowed_attr=("ovm-ParticipantOddsOnly_Odds",),
+    forbidden_tags=("p",),
+)
+
+df4 = subprocess_parsing(
+    htmldata,
+    chunks=1,
+    processes=5,
+    fake_header=True,
+    print_stdout=True,
+    print_stderr=True,
+    allowed_tags=(),
+    allowed_attr=(
+        "ovm-Fixture_Container",
+        "ovm-FixtureDetailsTwoWay_TeamName",
+        "ovm-ParticipantOddsOnly_Odds",
+        "events-list__grid__even",
+        "selections__selection__odd",
+        "events-list__grid__info__main__participants__participant-name tw-truncate",
+    ),
+    allowed_attr_keys=("class",),
+)
+
+
+df5 = subprocess_parsing(
+    htmldata,
+    chunks=1,
+    processes=5,
+    fake_header=True,
+    print_stdout=True,
+    print_stderr=True,
+    allowed_tags=(),
+    allowed_attr=("ovm-Fixture_Container",),
+    allowed_attr_keys=("class",),
+)
+
+# parse a webpage:
+df = subprocess_parsing(
+    [("python", "https://www.python.org/")],
+    chunks=1,
+    processes=5,
+    fake_header=True,
+    print_stdout=True,
+    print_stderr=True,
+    allowed_tags=(),
+    allowed_attr=(),
+    allowed_attr_keys=(),
+)
+
 
 ```
