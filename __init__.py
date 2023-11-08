@@ -522,7 +522,7 @@ def subprocess_parsing(
     envvars = os.environ.copy()
     envvars["___PARSEHTMLDATA___"] = basedata
     p = subprocess.run(
-        [sys.executable, __file__, fi],
+        [sys.executable, __file__],
         capture_output=True,
         env=envvars,
         **invisibledict,
