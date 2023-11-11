@@ -1,23 +1,21 @@
-import base64
 import os
-import pickle
 import platform
 import re
 import subprocess
 import sys
-import tempfile
 from collections import defaultdict
 from email.parser import BytesParser
 from email import policy
-from functools import cache, partial
-import multiprocessing
+from functools import cache
 import requests
 from fake_headers import Headers
+from flatten_everything import flatten_everything
 from lxml import etree
 from a_pandas_ex_apply_ignore_exceptions import pd_add_apply_ignore_exceptions
 import pandas as pd
 import numpy as np
 from lxml import html
+from multiprocnomain import start_multiprocessing
 
 pd_add_apply_ignore_exceptions()
 
@@ -34,26 +32,52 @@ if iswindows:
     }
 else:
     invisibledict = {}
-idcounter = 0
-allowedtags = ()
-allowedattr = ()
-forbiddentags = ()
-allowedattrkeys = ()
 
 
-def multidata(multipart_messages):
+def get_fake_header():
+    header = Headers(headers=False).generate()
+    agent = header["User-Agent"]
+
+    headers = {
+        "User-Agent": f"{agent}",
+    }
+
+    return headers
+
+
+def get_html_src(htmlcode, fake_header=True):
+    if isinstance(htmlcode, str):
+        if os.path.exists(htmlcode):
+            if os.path.isfile(htmlcode):
+                with open(htmlcode, mode="rb") as f:
+                    htmlcode = f.read()
+        elif re.search(r"^.{1,10}://", str(htmlcode)) is not None:
+            if not fake_header:
+                htmlcode = requests.get(htmlcode).content
+            else:
+                htmlcode = requests.get(htmlcode, headers=get_fake_header()).content
+        else:
+            htmlcode = htmlcode.encode("utf-8", "backslashreplace")
+    return htmlcode
+
+
+def multidata(multipart_messages, fake_header=True, musthave=()):
     allco = []
     totalno = 0
     for name, multipart_message in multipart_messages:
-        with open(multipart_message, mode="rb") as f:
-            multipart_message = f.read()
+        multipart_message = get_html_src(multipart_message, fake_header=fake_header)
         message = BytesParser(policy=policy.default).parsebytes(multipart_message)
         con = 0
 
         for part in message.walk():
             try:
                 content = part.get_payload(decode=True)
-
+                if musthave:
+                    for mus in musthave:
+                        if mus in content:
+                            break
+                    else:
+                        continue
                 if content:
                     allco.append([con, content, name, totalno])
                     totalno = totalno + 1
@@ -65,28 +89,28 @@ def multidata(multipart_messages):
     return allco
 
 
-def init_worker(
-    shared_int, allowed_tags, allowed_attr, forbidden_tags, allowed_attr_keys
-):
-    global idcounter
-    global allowedtags
-    global allowedattr
-    global forbiddentags
-    global allowedattrkeys
-    idcounter = shared_int
-    allowedtags = allowed_tags
-    allowedattr = allowed_attr
-    forbiddentags = forbidden_tags
-    allowedattrkeys = allowed_attr_keys
+def _parse_html(data):
+    exec(f"from collections import defaultdict", globals())
+    exec(
+        f"from a_pandas_ex_apply_ignore_exceptions import pd_add_apply_ignore_exceptions",
+        globals(),
+    )
+    exec(f"import pandas as pd", globals())
+    exec(f"import numpy as np", globals())
+    exec(f"from lxml import html, etree", globals())
+    exec(f"from functools import cache", globals())
 
+    # ,
+    pd_add_apply_ignore_exceptions()
 
-def _parse_html(data, shared_list):
+    idcounter = 0
+
     def fia(el, h):
-        global idcounter
+        nonlocal idcounter
         elhash = hash(el)
         if elhash not in newids:
-            newids[elhash] = int(idcounter.value)
-            idcounter.value += 1
+            newids[elhash] = int(idcounter)
+            idcounter += 1
         if elhash not in allitems:
             allitems[elhash] = el
         if not hasattr(el, "getchildren"):
@@ -213,56 +237,49 @@ def _parse_html(data, shared_list):
     unique_aa_all_children = set(df["aa_all_children"])
     unique_aa_direct_children = set(df["aa_direct_children"])
 
-    shared_list.append(
+    return [
+        df.astype(
+            {
+                "aa_multipart_id": np.uint32,
+                "aa_element_id": np.uint32,
+                "aa_multipart_counter": np.uint32,
+            }
+        ),
         [
-            df.astype(
-                {
-                    "aa_multipart_id": np.uint32,
-                    "aa_element_id": np.uint32,
-                    "aa_multipart_counter": np.uint32,
-                }
-            ),
-            [
-                unique_aa_tag,
-                unique_aa_text,
-                unique_aa_attr_keys,
-                unique_aa_attr_values,
-                unique_aa_html,
-                unique_aa_tail,
-                unique_aa_doc_id,
-                unique_aa_parents,
-                unique_aa_all_children,
-                unique_aa_direct_children,
-            ],
-        ]
+            unique_aa_tag,
+            unique_aa_text,
+            unique_aa_attr_keys,
+            unique_aa_attr_values,
+            unique_aa_html,
+            unique_aa_tail,
+            unique_aa_doc_id,
+            unique_aa_parents,
+            unique_aa_all_children,
+            unique_aa_direct_children,
+        ],
+    ]
+
+
+def _parse_html_filter(data, allowedtags, forbiddentags, allowedattr, allowedattrkeys):
+    exec(f"from collections import defaultdict", globals())
+    exec(
+        f"from a_pandas_ex_apply_ignore_exceptions import pd_add_apply_ignore_exceptions",
+        globals(),
     )
+    exec(f"import pandas as pd", globals())
+    exec(f"import numpy as np", globals())
+    exec(f"from lxml import html, etree", globals())
+    exec(f"from functools import cache", globals())
+    pd_add_apply_ignore_exceptions()
 
+    idcounter = 0
 
-def parse_html(data, shared_list):
-    try:
-        if any(
-            [
-                allowedtags,
-                allowedattr,
-                forbiddentags,
-                allowedattrkeys,
-            ]
-        ):
-            _parse_html_filter(data, shared_list)
-        else:
-            _parse_html(data, shared_list)
-    except Exception as e:
-        sys.stderr.write(f"{e}\n")
-        sys.stderr.flush()
-
-
-def _parse_html_filter(data, shared_list):
     def fia(el, h):
-        global idcounter
+        nonlocal idcounter
         elhash = hash(el)
         if elhash not in newids:
-            newids[elhash] = int(idcounter.value)
-            idcounter.value += 1
+            newids[elhash] = int(idcounter)
+            idcounter += 1
         if elhash not in allitems:
             allitems[elhash] = el
         if not hasattr(el, "getchildren"):
@@ -418,66 +435,27 @@ def _parse_html_filter(data, shared_list):
     unique_aa_all_children = set(df["aa_all_children"])
     unique_aa_direct_children = set(df["aa_direct_children"])
 
-    shared_list.append(
+    return [
+        df.astype(
+            {
+                "aa_multipart_id": np.uint32,
+                "aa_element_id": np.uint32,
+                "aa_multipart_counter": np.uint32,
+            }
+        ),
         [
-            df.astype(
-                {
-                    "aa_multipart_id": np.uint32,
-                    "aa_element_id": np.uint32,
-                    "aa_multipart_counter": np.uint32,
-                }
-            ),
-            [
-                unique_aa_tag,
-                unique_aa_text,
-                unique_aa_attr_keys,
-                unique_aa_attr_values,
-                unique_aa_html,
-                unique_aa_tail,
-                unique_aa_doc_id,
-                unique_aa_parents,
-                unique_aa_all_children,
-                unique_aa_direct_children,
-            ],
-        ]
-    )
-
-
-
-
-def get_tmpfile(suffix=".txt"):
-    tfp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    filename = tfp.name
-    filename = os.path.normpath(filename)
-    tfp.close()
-    return filename, partial(os.remove, tfp.name)
-
-
-def get_fake_header():
-    header = Headers(headers=False).generate()
-    agent = header["User-Agent"]
-
-    headers = {
-        "User-Agent": f"{agent}",
-    }
-
-    return headers
-
-
-def get_html_src(htmlcode, fake_header=True):
-    if isinstance(htmlcode, str):
-        if os.path.exists(htmlcode):
-            if os.path.isfile(htmlcode):
-                with open(htmlcode, mode="rb") as f:
-                    htmlcode = f.read()
-        elif re.search(r"^.{1,10}://", str(htmlcode)) is not None:
-            if not fake_header:
-                htmlcode = requests.get(htmlcode).content
-            else:
-                htmlcode = requests.get(htmlcode, headers=get_fake_header()).content
-        else:
-            htmlcode = htmlcode.encode("utf-8", "backslashreplace")
-    return htmlcode
+            unique_aa_tag,
+            unique_aa_text,
+            unique_aa_attr_keys,
+            unique_aa_attr_values,
+            unique_aa_html,
+            unique_aa_tail,
+            unique_aa_doc_id,
+            unique_aa_parents,
+            unique_aa_all_children,
+            unique_aa_direct_children,
+        ],
+    ]
 
 
 def subprocess_parsing(
@@ -485,236 +463,177 @@ def subprocess_parsing(
     chunks=1,
     processes=5,
     fake_header=True,
-    print_stdout=True,
+    print_stdout=False,
     print_stderr=True,
     allowed_tags=(),
     forbidden_tags=(),
     allowed_attr=(),
     allowed_attr_keys=(),
 ):
-    newhtmldata = []
-    deletefilefunctions = []
-
-    for data in htmldata:
-        htmldata = get_html_src(htmlcode=data[1], fake_header=fake_header)
-        fi, remo = get_tmpfile(suffix=".html")
-
-        with open(fi, mode="wb") as f:
-            f.write(htmldata)
-        deletefilefunctions.append(remo)
-
-        newhtmldata.append([data[0], fi])
-    fipkl, remopkl = get_tmpfile(suffix=".pkl")
-    deletefilefunctions.append(remopkl)
-
-    datatosend = {
-        "chunks": chunks,
-        "processes": processes,
-        "htmldata": newhtmldata,
-        "outdata": fipkl,
-        "allowed_tags": allowed_tags,
-        "allowed_attr": allowed_attr,
-        "allowed_attr_keys": allowed_attr_keys,
-        "forbidden_tags": forbidden_tags,
-    }
-    v = pickle.dumps(datatosend, protocol=pickle.HIGHEST_PROTOCOL)
-    basedata = base64.b64encode(v).decode()
-    envvars = os.environ.copy()
-    envvars["___PARSEHTMLDATA___"] = basedata
-    p = subprocess.run(
-        [sys.executable, __file__],
-        capture_output=True,
-        env=envvars,
-        **invisibledict,
-    )
-    if print_stdout:
-        print(p.stdout.decode("utf-8", "backslashreplace"))
-    if print_stderr:
-        sys.stderr.write(f"{p.stderr.decode('utf-8', 'backslashreplace')}\n")
-        sys.stderr.flush()
-    df = pd.read_pickle(fipkl)
-    for fun in deletefilefunctions:
+    if any(
+        (
+            th := [
+                allowed_tags,
+                allowed_attr,
+                forbidden_tags,
+                allowed_attr_keys,
+            ]
+        )
+    ):
         try:
-            fun()
+            musthave = (tgh.encode("utf-8") for tgh in flatten_everything(th))
         except Exception:
-            pass
+            musthave = ()
+
+        dada = [
+            {
+                "data": u,
+                "allowedtags": allowed_tags,
+                "forbiddentags": forbidden_tags,
+                "allowedattr": allowed_attr,
+                "allowedattrkeys": allowed_attr_keys,
+            }
+            for u in multidata(
+                multipart_messages=htmldata, fake_header=fake_header, musthave=musthave
+            )
+        ]
+        alldataready = start_multiprocessing(
+            fu=_parse_html_filter,
+            it=dada,
+            processes=processes,
+            chunks=chunks,
+            print_stdout=print_stdout,
+            print_stderr=print_stderr,
+        )
+        df = pd.concat([alldataready[q][0] for q in alldataready], ignore_index=True)
+        alldataready = list(alldataready.values())
+
+    else:
+        dada = [
+            {"data": u}
+            for u in multidata(multipart_messages=htmldata, fake_header=fake_header)
+        ]
+        alldataready = start_multiprocessing(
+            fu=_parse_html,
+            it=dada,
+            processes=processes,
+            chunks=chunks,
+            print_stdout=print_stdout,
+            print_stderr=print_stderr,
+        )
+        df = pd.concat(
+            [alldataready[q][0].assign(aa_multipart=q) for q in alldataready],
+            ignore_index=True,
+        )
+        alldataready = list(alldataready.values())
+
+    try:
+        df["aa_tag"] = pd.Series(
+            pd.Categorical(
+                df["aa_tag"],
+                categories=np.unique(np.hstack([o[1][0] for o in alldataready])),
+            )
+        )
+    except Exception as e:
+        sys.stderr.write(f"{e}\n\n")
+        sys.stderr.flush()
+
+    try:
+        df["aa_text"] = pd.Series(
+            pd.Categorical(
+                df["aa_text"],
+                categories=np.unique(np.hstack([o[1][1] for o in alldataready])),
+            )
+        )
+    except Exception as e:
+        sys.stderr.write(f"{e}\n\n")
+        sys.stderr.flush()
+
+    try:
+        df["aa_attr_keys"] = pd.Series(
+            pd.Categorical(
+                df["aa_attr_keys"],
+                categories=np.unique(np.hstack([o[1][2] for o in alldataready])),
+            )
+        )
+    except Exception as e:
+        sys.stderr.write(f"{e}\n\n")
+        sys.stderr.flush()
+
+    try:
+        df["aa_attr_values"] = pd.Series(
+            pd.Categorical(
+                df["aa_attr_values"],
+                categories=np.unique(np.hstack([o[1][3] for o in alldataready])),
+            )
+        )
+    except Exception as e:
+        sys.stderr.write(f"{e}\n\n")
+        sys.stderr.flush()
+
+    try:
+        df["aa_html"] = pd.Series(
+            pd.Categorical(
+                df["aa_html"],
+                categories=np.unique(np.hstack([o[1][4] for o in alldataready])),
+            )
+        )
+    except Exception as e:
+        sys.stderr.write(f"{e}\n\n")
+        sys.stderr.flush()
+
+    try:
+        df["aa_tail"] = pd.Series(
+            pd.Categorical(
+                df["aa_tail"],
+                categories=np.unique(np.hstack([o[1][5] for o in alldataready])),
+            )
+        )
+    except Exception as e:
+        sys.stderr.write(f"{e}\n\n")
+        sys.stderr.flush()
+
+    try:
+        df["aa_doc_id"] = pd.Series(
+            pd.Categorical(
+                df["aa_doc_id"],
+                categories=np.unique(np.hstack([o[1][6] for o in alldataready])),
+            )
+        )
+    except Exception as e:
+        sys.stderr.write(f"{e}\n\n")
+        sys.stderr.flush()
+    try:
+        df["aa_parents"] = pd.Series(
+            pd.Categorical(
+                df["aa_parents"],
+                categories=set.union(*[o[1][7] for o in alldataready]),
+            )
+        )
+    except Exception as e:
+        sys.stderr.write(f"{e}\n\n")
+        sys.stderr.flush()
+
+    try:
+        df["aa_all_children"] = pd.Series(
+            pd.Categorical(
+                df["aa_all_children"],
+                categories=set.union(*[o[1][8] for o in alldataready]),
+            )
+        )
+    except Exception as e:
+        sys.stderr.write(f"{e}\n\n")
+        sys.stderr.flush()
+
+    try:
+        df["aa_direct_children"] = pd.Series(
+            pd.Categorical(
+                df["aa_direct_children"],
+                categories=set.union(*[o[1][9] for o in alldataready]),
+            )
+        )
+    except Exception as e:
+        sys.stderr.write(f"{e}\n\n")
+        sys.stderr.flush()
+
     return df
-
-
-if __name__ == "__main__":
-    if da := os.environ.get("___PARSEHTMLDATA___", None):
-        parsedata = pickle.loads(base64.b64decode(da))
-        htmldata = parsedata["htmldata"]
-        outdata = parsedata["outdata"]
-        chunks = parsedata["chunks"]
-        processes = parsedata["processes"]
-        allowedtags = parsedata["allowed_tags"]
-        allowed_attr = parsedata["allowed_attr"]
-        forbidden_tags = parsedata["forbidden_tags"]
-        allowed_attr_keys = parsedata["allowed_attr_keys"]
-        md = multidata(htmldata)
-        with multiprocessing.Manager() as manager:
-            shared_list = manager.list()
-            counter = multiprocessing.Value("i", 0)
-            with multiprocessing.Pool(
-                processes=processes,
-                initializer=init_worker,
-                initargs=(
-                    counter,
-                    allowedtags,
-                    allowed_attr,
-                    forbidden_tags,
-                    allowed_attr_keys,
-                ),
-            ) as pool:
-                pool.starmap(
-                    parse_html,
-                    ((value, shared_list) for value in md),
-                    chunksize=chunks,
-                )
-                alldataready = [o for o in shared_list]
-                df = (
-                    pd.concat(
-                        ([o[0] for o in alldataready]), ignore_index=True, copy=False
-                    )
-                    .sort_values(
-                        by=[
-                            "aa_doc_id",
-                            "aa_multipart_id",
-                            "aa_element_id",
-                            "aa_multipart_counter",
-                        ]
-                    )
-                    .reset_index(drop=True)
-                    .astype(
-                        {
-                            "aa_multipart_id": np.uint32,
-                            "aa_element_id": np.uint32,
-                            "aa_multipart_counter": np.uint32,
-                        }
-                    )
-                )
-                try:
-                    df["aa_tag"] = pd.Series(
-                        pd.Categorical(
-                            df["aa_tag"],
-                            categories=np.unique(
-                                np.hstack([o[1][0] for o in alldataready])
-                            ),
-                        )
-                    )
-                except Exception as e:
-                    sys.stderr.write(f"{e}\n\n")
-                    sys.stderr.flush()
-
-                try:
-                    df["aa_text"] = pd.Series(
-                        pd.Categorical(
-                            df["aa_text"],
-                            categories=np.unique(
-                                np.hstack([o[1][1] for o in alldataready])
-                            ),
-                        )
-                    )
-                except Exception as e:
-                    sys.stderr.write(f"{e}\n\n")
-                    sys.stderr.flush()
-
-                try:
-                    df["aa_attr_keys"] = pd.Series(
-                        pd.Categorical(
-                            df["aa_attr_keys"],
-                            categories=np.unique(
-                                np.hstack([o[1][2] for o in alldataready])
-                            ),
-                        )
-                    )
-                except Exception as e:
-                    sys.stderr.write(f"{e}\n\n")
-                    sys.stderr.flush()
-
-                try:
-                    df["aa_attr_values"] = pd.Series(
-                        pd.Categorical(
-                            df["aa_attr_values"],
-                            categories=np.unique(
-                                np.hstack([o[1][3] for o in alldataready])
-                            ),
-                        )
-                    )
-                except Exception as e:
-                    sys.stderr.write(f"{e}\n\n")
-                    sys.stderr.flush()
-
-                try:
-                    df["aa_html"] = pd.Series(
-                        pd.Categorical(
-                            df["aa_html"],
-                            categories=np.unique(
-                                np.hstack([o[1][4] for o in alldataready])
-                            ),
-                        )
-                    )
-                except Exception as e:
-                    sys.stderr.write(f"{e}\n\n")
-                    sys.stderr.flush()
-
-                try:
-                    df["aa_tail"] = pd.Series(
-                        pd.Categorical(
-                            df["aa_tail"],
-                            categories=np.unique(
-                                np.hstack([o[1][5] for o in alldataready])
-                            ),
-                        )
-                    )
-                except Exception as e:
-                    sys.stderr.write(f"{e}\n\n")
-                    sys.stderr.flush()
-
-                try:
-                    df["aa_doc_id"] = pd.Series(
-                        pd.Categorical(
-                            df["aa_doc_id"],
-                            categories=np.unique(
-                                np.hstack([o[1][6] for o in alldataready])
-                            ),
-                        )
-                    )
-                except Exception as e:
-                    sys.stderr.write(f"{e}\n\n")
-                    sys.stderr.flush()
-                try:
-                    df["aa_parents"] = pd.Series(
-                        pd.Categorical(
-                            df["aa_parents"],
-                            categories=set.union(*[o[1][7] for o in alldataready]),
-                        )
-                    )
-                except Exception as e:
-                    sys.stderr.write(f"{e}\n\n")
-                    sys.stderr.flush()
-
-                try:
-                    df["aa_all_children"] = pd.Series(
-                        pd.Categorical(
-                            df["aa_all_children"],
-                            categories=set.union(*[o[1][8] for o in alldataready]),
-                        )
-                    )
-                except Exception as e:
-                    sys.stderr.write(f"{e}\n\n")
-                    sys.stderr.flush()
-
-                try:
-                    df["aa_direct_children"] = pd.Series(
-                        pd.Categorical(
-                            df["aa_direct_children"],
-                            categories=set.union(*[o[1][9] for o in alldataready]),
-                        )
-                    )
-                except Exception as e:
-                    sys.stderr.write(f"{e}\n\n")
-                    sys.stderr.flush()
-
-                df.to_pickle(outdata)

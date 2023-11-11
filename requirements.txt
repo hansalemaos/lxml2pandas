@@ -1,6 +1,8 @@
 a_pandas_ex_apply_ignore_exceptions
 fake_headers
+flatten_everything
 lxml
+multiprocnomain
 numpy
 pandas
 requests
