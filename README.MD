@@ -160,4 +160,22 @@ df = subprocess_parsing(
 )
 
 
+
+# Generate a column with css selectors 
+
+from lxml2pandas import subprocess_parsing,pd_add_generate_css_selector
+pd_add_generate_css_selector()
+htmldata = [
+    ("bet365", r"C:\Users\hansc\Downloads\bet365 - Apostas Desportivas Online2.mhtml"),
+]
+df = subprocess_parsing(
+    htmldata,
+    chunks=1,
+    processes=5,
+    fake_header=True,
+    print_stdout=False,
+    print_stderr=True,
+)
+df = df.s_generate_css_selector()
+
 ```

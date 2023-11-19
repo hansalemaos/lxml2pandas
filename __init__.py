@@ -16,6 +16,8 @@ import pandas as pd
 import numpy as np
 from lxml import html
 from multiprocnomain import start_multiprocessing
+from pandas.core.frame import DataFrame
+
 
 pd_add_apply_ignore_exceptions()
 
@@ -43,6 +45,42 @@ def get_fake_header():
     }
 
     return headers
+
+
+def _add_css_selector(df):
+    aa_all_css = (
+        df.groupby(["aa_html", "aa_doc_id", "aa_multipart_counter", "aa_multipart"])
+        .apply(
+            lambda h: [
+                str(h.aa_tag.to_list()[0])
+                + "".join(
+                    sorted(
+                        set(
+                            [
+                                f'[{r[0]}="{r[1]}"]'
+                                for r in (
+                                    zip(
+                                        h.aa_attr_keys.to_list(),
+                                        h.aa_attr_values.to_list(),
+                                    )
+                                )
+                                if r[0] and r[1]
+                            ]
+                        ),
+                        key=len,
+                    )
+                ),
+                h.index.to_list(),
+            ]
+        )
+        .reset_index(drop=True)
+        .apply(pd.Series)
+    )
+    return pd.concat([df, aa_all_css.explode(1).set_index(1)], axis=1)
+
+
+def pd_add_generate_css_selector():
+    DataFrame.s_generate_css_selector = _add_css_selector
 
 
 def get_html_src(htmlcode, fake_header=True):
